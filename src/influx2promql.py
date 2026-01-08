@@ -69,6 +69,8 @@ def convert_flux_to_promql(flux_query):
     for match in filter_matches:
         tag = match.group(1)
         value = match.group(2)
+        # Convert Grafana variable syntax from ${var} to $var
+        value = re.sub(r'\$\{([^}]+)\}', r'$\1', value)
         if tag not in ["_measurement", "_field"]:  # Skip these as they're part of the metric name
             filters.append(f'{tag}="{value}"')
     
