@@ -139,9 +139,6 @@ def influx_to_prometheus(csv_data):
 def main():
     parser = argparse.ArgumentParser(description='Convert InfluxDB data to Prometheus format, or translate InfluxDB queries to PromQL')
 
-    # Common arguments
-    parser.add_argument('--output', help='Output file (default: stdout)')
-
     # Create subparsers for different commands
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
 
@@ -153,6 +150,7 @@ def main():
     convert_parser.add_argument('--query', help='Flux query to execute')
     convert_parser.add_argument('--query-file', help='File containing a Flux query')
     convert_parser.add_argument('--input-json', help='Read data from a JSON file instead of querying InfluxDB')
+    convert_parser.add_argument('--output', help='Output file (default: stdout)')
 
     # Translate command - new functionality for translating queries to PromQL
     translate_parser = subparsers.add_parser('translate', help='Translate InfluxDB queries to PromQL')
@@ -160,6 +158,7 @@ def main():
     translate_parser.add_argument('--query-file', help='File containing an InfluxDB query')
     translate_parser.add_argument('--type', choices=['flux', 'influxql'],
                             help='Force query type interpretation (flux or influxql)')
+    translate_parser.add_argument('--output', help='Output file (default: stdout)')
 
     # For backward compatibility, assume 'convert' command if no command is specified
     args = parser.parse_args()
