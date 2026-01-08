@@ -23,7 +23,8 @@ def convert_flux_to_promql(flux_query):
     # Basic patterns to identify in Flux queries
     bucket_pattern = r'from\(bucket:\s*"([^"]+)"\)'
     range_pattern = r'range\(start:\s*([^,\)]+)(?:,\s*stop:\s*([^,\)]+))?\)'
-    filter_pattern = r'filter\(fn:\s*\(r\)\s*=>\s*r\.([^\s]+)\s*==\s*"([^"]+)"\)'
+    # Support both r.tag and r["tag"] syntax, and both "value" and "${var}" values
+    filter_pattern = r'filter\(fn:\s*\(r\)\s*=>\s*r(?:\.|\[")([^\s"\]]+)(?:"\])?\s*==\s*"([^"]+)"\)'
     field_pattern = r'_field\s*==\s*"([^"]+)"'
     measurement_pattern = r'_measurement\s*==\s*"([^"]+)"'
     aggregate_pattern = r'(mean|sum|count|min|max|stddev)\(\)'
