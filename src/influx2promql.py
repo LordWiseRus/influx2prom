@@ -21,58 +21,119 @@ def convert_flux_to_promql(flux_query):
         The equivalent PromQL query
     """
     # Basic patterns to identify in Flux queries
-    bucket_pattern = r'from\(bucket:\s*"([^"]+)"\)'
+    bucket_pattern = r'from\(bucket:\s*["\$\{]*([^"}\)]+)["\}]*\s*\)'
     range_pattern = r'range\(start:\s*([^,\)]+)(?:,\s*stop:\s*([^,\)]+))?\)'
-    # Support both r.tag and r["tag"] syntax, and both "value" and "${var}" values
-    filter_pattern = r'filter\(fn:\s*\(r\)\s*=>\s*r(?:\.|\[")([^\s"\]]+)(?:"\])?\s*==\s*"([^"]+)"\)'
-    field_pattern = r'_field\s*==\s*"([^"]+)"'
-    measurement_pattern = r'_measurement\s*==\s*"([^"]+)"'
     aggregate_pattern = r'(mean|sum|count|min|max|stddev)\(\)'
     
-    # Extract bucket, time range, filters, etc.
+    # Pattern for equality filters: r["tag"] == "value" or r.tag == "value"
+    equality_filter_pattern = r'r(?:\.|\[")(_?[^\s"\]]+)(?:"\])?\s*==\s*"([^"]+)"'
+    
+    # Pattern for regex filters: r["tag"] =~ /regex/ or r.tag =~ /regex/
+    regex_filter_pattern = r'r(?:\.|\[")(_?[^\s"\]]+)(?:"\])?\s*=~\s*/([^/]+)/'
+    
+    # Extract bucket and time range
     bucket_match = re.search(bucket_pattern, flux_query)
     range_match = re.search(range_pattern, flux_query)
-    measurement_match = re.search(measurement_pattern, flux_query)
-    field_match = re.search(field_pattern, flux_query)
     aggregate_match = re.search(aggregate_pattern, flux_query)
     
     # Initialize PromQL components
     metric_name = ""
+    metric_names = []
     filters = []
     time_range = ""
     aggregation = ""
     
     # Parse bucket (not directly used in PromQL but useful for context)
     bucket = bucket_match.group(1) if bucket_match else None
+
+    measurements = []
+    fields = []
+    
+    # Parse all filter blocks
+    filter_blocks = re.findall(r'\|>\s*filter\(fn:\s*\(r\)\s*=>\s*([^)]+)\)', flux_query)
+    
+    for block in filter_blocks:
+        # Find all tag==value pairs (equality)
+        eq_pairs = re.findall(equality_filter_pattern, block)
+        # Find all tag=~regex pairs (regex match)
+        regex_pairs = re.findall(regex_filter_pattern, block)
+        
+        tags_in_block = {}
+        regex_tags = {}
+        
+        for tag, value in eq_pairs:
+            # Convert Grafana variable syntax from ${var} to $var
+            value = re.sub(r'\$\{([^}]+)\}', r'$\1', value)
+            
+            if tag not in tags_in_block:
+                tags_in_block[tag] = []
+            tags_in_block[tag].append(value)
+        
+        for tag, regex_value in regex_pairs:
+            # Convert Grafana variable syntax from ${var:regex} to $var
+            regex_value = re.sub(r'\$\{([^:}]+)(?::[^}]+)?\}', r'$\1', regex_value)
+            regex_tags[tag] = regex_value
+        
+        # Process each equality tag
+        for tag, values in tags_in_block.items():
+            if tag == "_measurement":
+                measurements.extend(values)
+            elif tag == "_field":
+                fields.extend(values)
+            else:
+                # Regular filter - if multiple values, use regex
+                if len(values) == 1:
+                    filters.append(f'{tag}="{values[0]}"')
+                else:
+                    filters.append(f'{tag}=~"{"^(" + "|".join(values) + ")$"}"')
+        
+        # Process regex tags
+        for tag, regex_value in regex_tags.items():
+            if tag not in ["_measurement", "_field"]:
+                filters.append(f'{tag}=~"{regex_value}"')
     
     # Parse time range
     if range_match:
         start_time = range_match.group(1)
         stop_time = range_match.group(2)
-        
-        # Convert relative time notation
-        if start_time.startswith('-'):
-            # PromQL uses different time units notation
-            time_range = f"[{start_time.replace('h', 'h').replace('d', 'd').replace('m', 'm').replace('s', 's')}]"
+        # Convert relative time notation (e.g., -5m, -1h)
+        time_match = re.match(r'-(\d+)([smhdw])', start_time)
+        if time_match:
+            time_range = f"[{time_match.group(1)}{time_match.group(2)}]"
+    
+    # Build metric name(s)
+    if measurements and fields:
+        for m in measurements:
+            for f in fields:
+                metric_names.append(f"{m}_{f}")
+    elif measurements:
+        metric_names = measurements
+    elif fields:
+        metric_names = fields
+    
+    # Construct the PromQL query
+    if len(metric_names) == 1:
+        metric_name = metric_names[0]
+    elif len(metric_names) > 1:
+        # Use regex matcher for multiple metrics
+        metric_name = f'{{__name__=~"{"^(" + "|".join(metric_names) + ")$"}"}}'
+    
+    # Build the final query
+    if metric_name.startswith('{'):
+        # Already has braces (regex metric name)
+        if filters:
+            # Insert filters into existing braces
+            promql = metric_name[:-1] + ", " + ", ".join(filters) + "}"
         else:
-            # For absolute timestamps, would need more complex conversion
-            time_range = ""  # Placeholder for absolute time conversion
+            promql = metric_name
+    else:
+        promql = metric_name
+        if filters:
+            promql += "{" + ", ".join(filters) + "}"
     
-    # Parse measurement and field to create the metric name
-    if measurement_match and field_match:
-        measurement = measurement_match.group(1)
-        field = field_match.group(1)
-        metric_name = f"{measurement}_{field}"
-    
-    # Look for additional filters
-    filter_matches = re.finditer(filter_pattern, flux_query)
-    for match in filter_matches:
-        tag = match.group(1)
-        value = match.group(2)
-        # Convert Grafana variable syntax from ${var} to $var
-        value = re.sub(r'\$\{([^}]+)\}', r'$\1', value)
-        if tag not in ["_measurement", "_field"]:  # Skip these as they're part of the metric name
-            filters.append(f'{tag}="{value}"')
+    # Add time range
+    if time_range:
+        promql += time_range
     
     # Parse aggregation
     if aggregate_match:
@@ -88,21 +149,7 @@ def convert_flux_to_promql(flux_query):
         }
         if agg_func in agg_map:
             aggregation = agg_map[agg_func]
-    
-    # Construct the PromQL query
-    promql = metric_name
-    
-    # Add filters
-    if filters:
-        promql += "{" + ", ".join(filters) + "}"
-    
-    # Add time range
-    if time_range:
-        promql += time_range
-    
-    # Add aggregation
-    if aggregation:
-        promql = f"{aggregation}({promql})"
+            promql = f"{aggregation}({promql})"
     
     return promql
 
